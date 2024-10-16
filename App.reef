@@ -1,0 +1,357 @@
+
+class App                   
+    Places[0..n]:       Place
+    Hotels[0..n]:       Hotel
+    Users(all):         User
+end class 
+
+
+class User                  
+    login(64):              string -- System field, do not remove 
+    Reservations(0..n):     Reservation <backNav: User>
+end class 
+
+
+class Place
+    Name:               string
+    Longitude:          currency
+    Latitude:           currency
+end class
+
+
+class Hotel
+    Name:               string
+    City:               string
+    Address:            string
+    Phone:              string
+
+    Longitude:          currency
+    Latitude:           currency
+
+    Rooms[0..n]:        Room    <backNav: Hotel>			
+end class
+
+
+class Room
+    Name:               string
+    BedsNo:             integer
+    Occupancy<0..n>:    Span
+end class
+
+
+class Span
+    Start:              date        -- check-in date
+    End:                date        -- check-out date
+end class
+
+
+class Reservation
+    ReservationDate:    date
+    CheckInDate:        date
+    CheckOutDate:       date
+    Room:               Room
+end class
+
+
+const PI = 3.141592
+const EQUATOR_LENGTH = 40075
+const AVG_EARTH_RADIUS = 6371
+
+
+context App::CalculateGeoRange(placeName: string, radiusKm: currency): JsonObject
+post:
+    let place: Place
+    place = self.Places.select(element.Name = placeName).first
+
+    let dLong: currency = 360.0 * radiusKm / (EQUATOR_LENGTH * Cos(place.Latitude))
+    let dLat: currency = 360.0 * radiusKm / (2 * PI * AVG_EARTH_RADIUS)
+
+    dLong = Abs(dLong)
+    dLat = Abs(dLat)
+
+    result = {
+        latitude: place.Latitude,
+        longitude: place.Longitude,
+        latitudeMin: place.Latitude - dLat,
+        latitudeMax: place.Latitude + dLat,
+        longitudeMin: place.Longitude - dLong,
+        longitudeMax: place.Longitude + dLong
+    }
+
+    
+context Hotel::IsInGeoRange(longitudeMin: currency, latitudeMin: currency, longitudeMax: currency, latitudeMax: currency): boolean
+post:
+    if  (self.Longitude >= longitudeMin) and (self.Longitude <= longitudeMax) and (self.Latitude >= latitudeMin) and (self.Latitude <= latitudeMax) then
+        result = true
+    else
+        result = false
+    end if
+
+
+context Hotel::CalcAproxDistance(longitude: currency, latitude: currency): currency
+post:
+    let dLong: currency = Abs(longitude - self.Longitude)
+    let dLat: currency = Abs(latitude - self.Latitude)
+
+    let dX :currency = dLong * EQUATOR_LENGTH * Cos(self.Latitude) / 360.0
+    let dY :currency = dLat * 2 * PI * AVG_EARTH_RADIUS / 360.0
+
+    result = Sqrt(dX*dX + dY*dY)
+
+
+context Reservation::Cancel()
+post:
+    self.Room.RemoveReservation(self.CheckInDate, self.CheckOutDate)
+    self.delete
+
+context Span::Intersects(startDate: date, endDate: date): boolean
+post:
+    let l: date = Max(self.Start, startDate)
+    let r: date = Min(self.End, endDate)
+
+    if l < r then
+        result = true
+    else
+        result = false
+    end if
+
+context Room::isAvailable(startDate: date, endDate: date): boolean
+post:
+    if self.Occupancy.exists(element.Intersects(startDate, endDate)) then
+        result = false
+    else
+        result = true
+    end if
+
+
+context Room::MakeReserveation(startDate: date, endDate: date): Reservation
+pre 'Room is not available in specified range':
+    self.isAvailable(startDate, endDate)
+
+post:
+    if self.Occupancy.count = 0 then
+        self.Occupancy.newElement(element.Start=startDate and element.End=endDate)
+    else
+        
+        let nextSpan: Span
+        let prevSpan: Span
+
+        nextSpan = self.Occupancy.orderedBy('Start').select(element.Start > startDate).first
+        if nextSpan <> null then
+            prevSpan = self.Occupancy.orderedBy('Start').prior(nextSpan)
+        else
+            prevSpan = self.Occupancy.orderedBy('Start').last
+        end if
+
+        if prevSpan <> null and prevSpan.End = startDate then
+            prevSpan.End = endDate
+            if nextSpan <> null and nextSpan.Start = prevSpan.End then
+                prevSpan.End = nextSpan.End
+                nextSpan.delete
+            end if
+        else
+            if nextSpan <> null and nextSpan.Start = endDate then
+                nextSpan.Start = startDate
+            else
+                self.Occupancy.newElement(element.Start=startDate and element.End=endDate)
+            end if
+        end if
+
+    end if
+
+    result = user.Reservations.newElement(  element.Room = self and 
+                                            element.CheckInDate = startDate and 
+                                            element.CheckOutDate = endDate and 
+                                            element.ReservationDate = system.GetSystemDate())
+
+
+context Room::RemoveReservation(startDate: date, endDate: date) :boolean
+pre 'There is no reservation for specified dates range':
+    self.Occupancy.exists(element.Start <= startDate and element.End >= endDate)
+
+post:
+    let reservationSpan: Span = self.Occupancy.select(element.Start <= startDate and element.End >= endDate).first
+    if reservationSpan <> null then
+        if reservationSpan.Start = startDate then
+            if reservationSpan.End = endDate then
+                reservationSpan.delete
+            else
+                reservationSpan.Start = endDate
+            end if
+        else        -- reservationSpan.Start < startDate
+            if reservationSpan.End = endDate then
+                reservationSpan.End = startDate
+            else
+                self.Occupancy.newElement(element.Start = endDate and element.End = reservationSpan.End)
+                reservationSpan.End = startDate
+            end if
+        end if
+    end if
+
+    result = true
+    
+
+
+context App::InitSample(): string
+post:
+    self.Places.removeAll
+    self.Hotels.removeAll
+    self.Users.forAll(element.Reservations.removeAll)
+    self.Users.removeAll
+
+    self.Users.newElement(element.login = 'Alice')
+    self.Users.newElement(element.login = 'Bob')
+
+    self.Places.newElement(element.Name = 'Hong Kong'   and element.Longitude=114.1772  and element.Latitude=22.3027)
+    self.Places.newElement(element.Name = 'Bangkok'     and element.Longitude=100.5017  and element.Latitude=13.7563)
+    self.Places.newElement(element.Name = 'London'      and element.Longitude=-0.1277   and element.Latitude=51.5073)
+    
+
+    let hotel: Hotel in
+    hotel = self.Hotels.newElement( element.Name='Jen Hong Kong by Shangri-La' and 
+                            element.City='Hong Kong' and element.Address='' and element.Phone=''
+                            element.Longitude=114.1772  and element.Latitude=22.3123)
+
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+    
+
+    hotel = self.Hotels.newElement( element.Name='Butterfly on Wellington Boutique Hotel Central' and 
+                            element.City='Hong Kong' and element.Address='' and element.Phone=''
+                            element.Longitude=114.1772  and element.Latitude=22.3456)
+
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+    
+    hotel = self.Hotels.newElement( element.Name='JW Marriott Hotel Hong Kong' and 
+                            element.City='Hong Kong' and element.Address='' and element.Phone=''
+                            element.Longitude=114.1772  and element.Latitude=22.3789)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='The Park Lane Hong Kong, a Pullman Hotel' and 
+                            element.City='Hong Kong' and element.Address='' and element.Phone=''
+                            element.Longitude=114.1772  and element.Latitude=22.3413)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='Kerry Hotel, Hong Kong' and 
+                            element.City='Hong Kong' and element.Address='' and element.Phone=''
+                            element.Longitude=114.1772  and element.Latitude=22.3985)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+    hotel = self.Hotels.newElement( element.Name='Carlton Hotel Bangkok Sukhumvit' and 
+                            element.City='Bangkok' and element.Address='' and element.Phone=''
+                            element.Longitude=100.5017  and element.Latitude=13.7123)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+                            
+    hotel = self.Hotels.newElement( element.Name='The Rose Residence' and 
+                            element.City='Bangkok' and element.Address='' and element.Phone=''
+                            element.Longitude=100.5017  and element.Latitude=13.7456)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='Avani Plus Riverside Bangkok Hotel' and 
+                            element.City='Bangkok' and element.Address='' and element.Phone=''
+                            element.Longitude=100.5017  and element.Latitude=13.7685)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='Sindhorn Midtown Hotel Bangkok' and 
+                            element.City='Bangkok' and element.Address='' and element.Phone=''
+                            element.Longitude=100.5017  and element.Latitude=13.7386)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='Kimpton Maa-Lai Bangkok' and 
+                            element.City='Bangkok' and element.Address='' and element.Phone=''
+                            element.Longitude=100.5017  and element.Latitude=13.7669)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+
+    hotel = self.Hotels.newElement( element.Name='The Chesterfield Mayfair' and 
+                            element.City='London' and element.Address='' and element.Phone=''
+                            element.Longitude=-0.1277   and element.Latitude=51.5123)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+    hotel = self.Hotels.newElement( element.Name='The Londoner' and 
+                            element.City='London' and element.Address='' and element.Phone=''
+                            element.Longitude=-0.1277   and element.Latitude=51.5234)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+    hotel = self.Hotels.newElement( element.Name='Page8, Page Hotels' and 
+                            element.City='London' and element.Address='' and element.Phone=''
+                            element.Longitude=-0.1277   and element.Latitude=51.5001)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+    hotel = self.Hotels.newElement( element.Name='The Langham London' and 
+                            element.City='London' and element.Address='' and element.Phone=''
+                            element.Longitude=-0.1277   and element.Latitude=51.5321)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+    hotel = self.Hotels.newElement( element.Name='The Stafford London' and 
+                            element.City='London' and element.Address='' and element.Phone=''
+                            element.Longitude=-0.1277   and element.Latitude=51.5081)
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 1')
+    hotel.Rooms.newElement(element.BedsNo=1 and element.Name='Single Bed, Room no. 2')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 3')
+    hotel.Rooms.newElement(element.BedsNo=2 and element.Name='Double, Room no. 4')
+    hotel.Rooms.newElement(element.BedsNo=4 and element.Name='4 Beds, Room no. 5')
+
+
+    result = 'Created '+ self.Hotels.count + ' hotels in ' + self.Places.count + ' cities'
+    

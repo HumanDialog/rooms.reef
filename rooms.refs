@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ReefSolution ProjectName="rooms">
+  <Info>This is auto generated Reef Solution (*.refs) file.</Info>
+  <Build>
+    <Output Folder="bin/" File="rooms.refr"/>
+  </Build>
+  <Debug>
+    <SampleData Folder="bin/" File="rooms.refd"/>
+  </Debug>
+  <AppSettings>
+    <API Version="v001"/>
+  </AppSettings>
+</ReefSolution>
